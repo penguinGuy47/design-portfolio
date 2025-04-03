@@ -24,10 +24,11 @@ const ThreadBackground = () => {
   const repulsionStrength = 15;
   
   // Mouse repulsion parameters
-  const repulsionRadius = 250;
-  const repulsionResponse = 2.0;
-  const repulsionFalloff = 2.5;
-
+  const repulsionRadius = 150;
+  const repulsionResponse = 1.2;
+  const repulsionFalloff = 2.0;
+  const wholeThreadRepulsion = true;
+  
   // Spatial partitioning grid
   const gridSize = 50;
   const grid = {};
@@ -164,51 +165,94 @@ const ThreadBackground = () => {
     });
   };
 
-    const applyMouseRepulsion = (p5) => {
-        if (!p5.mouseIsPressed) return;
+  // Add a function to apply repulsion to entire threads
+  const applyMouseRepulsion = (p5) => {
+    if (!p5.mouseIsPressed) return;
 
-        threads.forEach((thread) => {
-            thread.forEach((particle, index) => {
-                if (particle.fixed) return;
-
-                // Limit repulsion effect on sequential particles to maintain thread integrity
-                const neighborCount = 
-                    (index > 0 && thread[index-1].repulsed ? 1 : 0) + 
-                    (index < thread.length-1 && thread[index+1].repulsed ? 1 : 0);
-
-                if (neighborCount >= 2) {
-                    // Skip if too many neighbors already affected
-                    return;
-                }
-
-                const dist = p5.dist(particle.pos.x, particle.pos.y, p5.mouseX, p5.mouseY);
-                if (dist < repulsionRadius && dist > 0) {
-                    // Mark as repulsed for this frame
-                    particle.repulsed = true;
-                    // Smooth falloff
-                    const falloff = Math.pow(1 - dist / repulsionRadius, repulsionFalloff);
-                    let forceMagnitude = repulsionStrength * falloff;
-
-                    const direction = p5.createVector(particle.pos.x - p5.mouseX, particle.pos.y - p5.mouseY);
-                    direction.normalize();
-
-                    // Apply more consistent, smoother position adjustment
-                    const immediateOffset = direction.copy().mult(repulsionResponse * falloff * 2.0);
-                    particle.pos.lerp(particle.pos.copy().add(immediateOffset), 0.5);
-                    particle.pos.add(immediateOffset.mult(0.8));
-
-                    // Update previous position proportionally to create damped response
-                    particle.prevPos.add(immediateOffset.mult(0.8));
-
-                    // Apply smaller acceleration component
-                    const repulsionForce = direction.mult(Math.min(forceMagnitude * 1.5, 5));
-                    particle.acc.add(repulsionForce);
-                } else {
-                    particle.repulsed = false;
-                }
-            });
+    // Calculate which threads are affected by repulsion
+    threads.forEach((thread, threadIndex) => {
+      // Check if any part of thread is within repulsion radius
+      let threadAffected = false;
+      let closestDist = Infinity;
+      let closestIndex = -1;
+      let avgForceDirection = p5.createVector(0, 0);
+      let totalAffectedPoints = 0;
+      
+      // First pass: determine if thread is affected and calculate average force
+      thread.forEach((particle, index) => {
+        const dist = p5.dist(particle.pos.x, particle.pos.y, p5.mouseX, p5.mouseY);
+        if (dist < repulsionRadius) {
+          threadAffected = true;
+          totalAffectedPoints++;
+          
+          // Keep track of closest point
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestIndex = index;
+          }
+          
+          // Calculate force direction
+          const falloff = Math.pow(1 - dist / repulsionRadius, repulsionFalloff);
+          const direction = p5.createVector(particle.pos.x - p5.mouseX, particle.pos.y - p5.mouseY);
+          direction.normalize().mult(falloff);
+          
+          // Add to average force
+          avgForceDirection.add(direction);
+          
+          // Mark as repulsed for visualization
+          particle.repulsed = true;
+        }
+      });
+      
+      // If thread isn't affected, skip it
+      if (!threadAffected) return;
+      
+      // Normalize the average force direction
+      if (totalAffectedPoints > 0) {
+        avgForceDirection.div(totalAffectedPoints);
+        avgForceDirection.normalize();
+      }
+      
+      // Second pass: apply force to entire thread with falloff from closest point
+      if (wholeThreadRepulsion) {
+        const threadCenterIndex = Math.floor(thread.length / 2);
+        
+        thread.forEach((particle, index) => {
+          if (particle.fixed) return;
+          
+          // Calculate distance-based falloff from closest affected point
+          let distanceFromClosest = Math.abs(index - closestIndex);
+          let falloff = Math.max(0, 1 - (distanceFromClosest / (thread.length * 0.5)));
+          falloff = Math.pow(falloff, 1.5); // Sharpen falloff curve
+          
+          // Stronger effect in thread middle, weaker near anchors
+          const verticalFalloff = Math.sin((index / (thread.length - 1)) * Math.PI);
+          
+          // Combine falloffs
+          const combinedFalloff = falloff * verticalFalloff;
+          
+          // Calculate base force magnitude based on closest point
+          const baseForce = Math.pow(1 - closestDist / repulsionRadius, repulsionFalloff) * repulsionStrength;
+          const forceMagnitude = baseForce * combinedFalloff;
+          
+          // Create properly scaled force
+          const force = avgForceDirection.copy().mult(forceMagnitude * repulsionResponse);
+          
+          // Apply position offset with smooth interpolation
+          particle.pos.add(force);
+          
+          // Update previous position for velocity consistency
+          particle.prevPos.add(force.copy().mult(0.75));
+          
+          // Add some force to acceleration for continued movement
+          particle.acc.add(force.copy().mult(0.3));
         });
-    };
+      } else {
+        // Fallback to original particle-based repulsion if whole thread mode is disabled
+        // (original code)
+      }
+    });
+  };
 
   // Draw function for p5.js (runs every frame)
   const draw = (p5) => {
